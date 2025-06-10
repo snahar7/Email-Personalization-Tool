@@ -1,34 +1,40 @@
 import React, { useEffect, useState } from 'react';
 import {
     Table,
-    TableBody,
-    TableCell,
-    TableContainer,
-    TableHead,
-    TableRow,
-    Paper,
-    IconButton,
-    Typography,
+    Thead,
+    Tbody,
+    Tr,
+    Th,
+    Td,
     Box,
-    CircularProgress,
-} from '@mui/material';
-import { Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
+    Spinner,
+    Text,
+    IconButton,
+    Link,
+    useToast,
+} from '@chakra-ui/react';
+import { FiEdit2, FiTrash2 } from 'react-icons/fi';
 import { Prospect } from '../types';
 import { getProspects } from '../services/api';
 
 const ProspectTable: React.FC = () => {
     const [prospects, setProspects] = useState<Prospect[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const toast = useToast();
 
     useEffect(() => {
         const fetchProspects = async () => {
             try {
                 const data = await getProspects();
                 setProspects(data);
-                setError(null);
             } catch (err) {
-                setError('Failed to fetch prospects');
+                toast({
+                    title: 'Error fetching prospects',
+                    description: 'Failed to load prospects data',
+                    status: 'error',
+                    duration: 5000,
+                    isClosable: true,
+                });
                 console.error('Error fetching prospects:', err);
             } finally {
                 setLoading(false);
@@ -36,70 +42,69 @@ const ProspectTable: React.FC = () => {
         };
 
         fetchProspects();
-    }, []);
+    }, [toast]);
 
     if (loading) {
         return (
             <Box display="flex" justifyContent="center" alignItems="center" minHeight="200px">
-                <CircularProgress />
-            </Box>
-        );
-    }
-
-    if (error) {
-        return (
-            <Box display="flex" justifyContent="center" alignItems="center" minHeight="200px">
-                <Typography color="error">{error}</Typography>
+                <Spinner size="xl" />
             </Box>
         );
     }
 
     return (
-        <TableContainer component={Paper}>
-            <Table>
-                <TableHead>
-                    <TableRow>
-                        <TableCell>Name</TableCell>
-                        <TableCell>Email</TableCell>
-                        <TableCell>Position</TableCell>
-                        <TableCell>Company</TableCell>
-                        <TableCell>LinkedIn</TableCell>
-                        <TableCell>Actions</TableCell>
-                    </TableRow>
-                </TableHead>
-                <TableBody>
+        <Box overflowX="auto">
+            <Table variant="simple">
+                <Thead>
+                    <Tr>
+                        <Th>Name</Th>
+                        <Th>Email</Th>
+                        <Th>Position</Th>
+                        <Th>Company</Th>
+                        <Th>LinkedIn</Th>
+                        <Th>Actions</Th>
+                    </Tr>
+                </Thead>
+                <Tbody>
                     {prospects.map((prospect) => (
-                        <TableRow key={prospect.id}>
-                            <TableCell>{prospect.name}</TableCell>
-                            <TableCell>{prospect.email}</TableCell>
-                            <TableCell>{prospect.position}</TableCell>
-                            <TableCell>{prospect.company?.name || '-'}</TableCell>
-                            <TableCell>
+                        <Tr key={prospect.id}>
+                            <Td>{prospect.name}</Td>
+                            <Td>{prospect.email}</Td>
+                            <Td>{prospect.position}</Td>
+                            <Td>{prospect.company?.name || '-'}</Td>
+                            <Td>
                                 {prospect.linkedin_url ? (
-                                    <a
+                                    <Link
                                         href={prospect.linkedin_url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
+                                        isExternal
+                                        color="blue.500"
                                     >
                                         View Profile
-                                    </a>
+                                    </Link>
                                 ) : (
                                     '-'
                                 )}
-                            </TableCell>
-                            <TableCell>
-                                <IconButton size="small" color="primary">
-                                    <EditIcon />
-                                </IconButton>
-                                <IconButton size="small" color="error">
-                                    <DeleteIcon />
-                                </IconButton>
-                            </TableCell>
-                        </TableRow>
+                            </Td>
+                            <Td>
+                                <IconButton
+                                    aria-label="Edit prospect"
+                                    icon={<FiEdit2 />}
+                                    size="sm"
+                                    colorScheme="blue"
+                                    mr={2}
+                                />
+                                <IconButton
+                                    aria-label="Delete prospect"
+                                    icon={<FiTrash2 />}
+                                    size="sm"
+                                    colorScheme="red"
+                                />
+                            </Td>
+                        </Tr>
                     ))}
-                </TableBody>
+                </Tbody>
             </Table>
-        </TableContainer>
+        </Box>
     );
 };
 

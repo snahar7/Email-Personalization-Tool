@@ -1,14 +1,72 @@
 import axios from 'axios';
 import { Company, Prospect } from '../types';
 
-const API_URL = 'http://localhost:8000/api';
+const baseURL = 'http://localhost:8000/api';
 
-const api = axios.create({
-    baseURL: API_URL,
+export const api = axios.create({
+    baseURL,
     headers: {
         'Content-Type': 'application/json',
     },
 });
+
+// Add request interceptor for authentication if needed
+api.interceptors.request.use(
+    (config) => {
+        const token = localStorage.getItem('token');
+        if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+        }
+        return config;
+    },
+    (error) => {
+        return Promise.reject(error);
+    }
+);
+
+// Add response interceptor for error handling
+api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        if (error.response?.status === 401) {
+            // Handle unauthorized access
+            localStorage.removeItem('token');
+            window.location.href = '/login';
+        }
+        return Promise.reject(error);
+    }
+);
+
+// API endpoints
+export const endpoints = {
+    // Prospects
+    getProspects: () => api.get('/prospects/'),
+    getProspect: (id: number) => api.get(`/prospects/${id}`),
+    createProspect: (data: any) => api.post('/prospects/', data),
+    updateProspect: (id: number, data: any) => api.put(`/prospects/${id}`, data),
+    deleteProspect: (id: number) => api.delete(`/prospects/${id}`),
+
+    // Companies
+    getCompanies: () => api.get('/companies/'),
+    getCompany: (id: number) => api.get(`/companies/${id}`),
+    createCompany: (data: any) => api.post('/companies/', data),
+    updateCompany: (id: number, data: any) => api.put(`/companies/${id}`, data),
+    deleteCompany: (id: number) => api.delete(`/companies/${id}`),
+
+    // Email Templates
+    getTemplates: () => api.get('/templates/'),
+    getTemplate: (id: number) => api.get(`/templates/${id}`),
+    createTemplate: (data: any) => api.post('/templates/', data),
+    updateTemplate: (id: number, data: any) => api.put(`/templates/${id}`, data),
+    deleteTemplate: (id: number) => api.delete(`/templates/${id}`),
+    createTemplateVariant: (id: number) => api.post(`/templates/${id}/variants`),
+
+    // Email Engagement
+    getEngagementMetrics: (days: number) => api.get(`/engagements/metrics/?days=${days}`),
+    getProspectEngagement: (id: number) => api.get(`/prospects/${id}/engagement/`),
+    createEngagement: (data: any) => api.post('/engagements/', data),
+    updateEngagement: (id: number, data: any) => api.put(`/engagements/${id}`, data),
+};
 
 export const getProspects = async (): Promise<Prospect[]> => {
     const response = await api.get('/prospects/');
