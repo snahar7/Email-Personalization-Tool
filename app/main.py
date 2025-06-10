@@ -1,16 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
-from app.api import prospects
-from app.database.database import engine, Base
+from app.api.endpoints import router as api_router
+from app.database.database import engine
+from app.models.models import Base
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Email Personalization Tool",
-    description="AI-powered email personalization tool for sales outreach",
+    description="API for managing companies and prospects with research information",
     version="1.0.0"
 )
 
@@ -23,8 +22,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(prospects.router, prefix="/api/prospects", tags=["prospects"])
+# Include API router
+app.include_router(api_router, prefix="/api")
 
 @app.get("/")
 async def root():
@@ -32,8 +31,4 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    return {"status": "healthy"} 
