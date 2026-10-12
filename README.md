@@ -1,7 +1,5 @@
 # Email Personalization Tool
 
-[![CI](https://github.com/snahar7/Email-Personalization-Tool/actions/workflows/ci.yml/badge.svg)](https://github.com/snahar7/Email-Personalization-Tool/actions/workflows/ci.yml)
-
 Load a list of prospects and an AI agent drafts a personalized sales email for each one, using their role, company research, and any product-usage data you pass in. You can then send it over SMTP.
 
 **Why:** reps spend hours personalizing outreach. This hands the first draft to an agent.
