@@ -235,3 +235,59 @@ def get_prospect_engagement(prospect_id: int, db: Session = Depends(get_db)):
         "last_engagement": engagements[0].sent_at if engagements else None,
         "engagement_trend": engagement_trend
     } 
+
+# AI email generation and sending
+from app.services import email_service  # noqa: E402
+
+
+def _get_prospect_or_404(db: Session, prospect_id: int) -> models.Prospect:
+    prospect = db.query(models.Prospect).filter(models.Prospect.id == prospect_id).first()
+    if prospect is None:
+        raise HTTPException(status_code=404, detail="Prospect not found")
+    return prospect
+
+
+@router.post("/prospects/{prospect_id}/generate-email", response_model=schemas.GeneratedEmail)
+def generate_email(
+    prospect_id: int,
+    request: Optional[schemas.GenerateEmailRequest] = None,
+    db: Session = Depends(get_db),
+):
+    request = request or schemas.GenerateEmailRequest()
+    prospect = _get_prospect_or_404(db, prospect_id)
+    template = None
+    if request.template_id is not None:
+        template = db.query(models.EmailTemplate).filter(models.EmailTemplate.id == request.template_id).first()
+        if template is None:
+            raise HTTPException(status_code=404, detail="Template not found")
+    try:
+        result = email_service.generate_personalized_email(
+            prospect, prospect.company, template, request.additional_context
+        )
+    except email_service.ConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:  # OpenAI/network errors
+        raise HTTPException(status_code=502, detail=f"Email generation failed: {e}")
+    return {"prospect_id": prospect.id, **result}
+
+
+@router.post("/prospects/{prospect_id}/send-email", response_model=schemas.SendEmailResult)
+def send_email(prospect_id: int, request: schemas.SendEmailRequest, db: Session = Depends(get_db)):
+    prospect = _get_prospect_or_404(db, prospect_id)
+    try:
+        email_service.send_email(prospect.email, request.subject, request.body)
+    except email_service.ConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Sending failed: {e}")
+    prospect.last_contacted = datetime.now(timezone.utc)
+    if prospect.status == "new":
+        prospect.status = "contacted"
+    engagement_id = None
+    if request.template_id is not None:
+        engagement = models.EmailEngagement(prospect_id=prospect.id, template_id=request.template_id)
+        db.add(engagement)
+        db.flush()
+        engagement_id = engagement.id
+    db.commit()
+    return {"prospect_id": prospect.id, "to": prospect.email, "sent": True, "engagement_id": engagement_id}

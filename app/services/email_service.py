@@ -1,176 +1,133 @@
-from typing import Optional, Dict
-import openai
-from datetime import datetime
-from sqlalchemy.orm import Session
+"""AI email personalization (OpenAI) and SMTP sending."""
+import os
+import smtplib
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from typing import Dict, Optional, Tuple
 
-from app.models.models import Prospect, Company, EmailTemplate
-from app.schemas.schemas import EmailTemplateCreate
+from openai import OpenAI
 
-class EmailPersonalizationService:
-    def __init__(self, openai_api_key: str):
-        self.openai_api_key = openai_api_key
-        openai.api_key = openai_api_key
+from app.models.models import Company, EmailTemplate, Prospect
 
-    def generate_personalized_email(
-        self,
-        prospect: Prospect,
-        company: Company,
-        template: EmailTemplate,
-        additional_context: Optional[Dict] = None
-    ) -> str:
-        """
-        Generate a personalized email using OpenAI's API
-        """
-        # Prepare context for the AI
-        context = {
-            "prospect": {
-                "name": prospect.name,
-                "position": prospect.position,
-                "company": company.name,
-                "industry": company.industry
-            },
-            "company": {
-                "name": company.name,
-                "industry": company.industry,
-                "description": company.description,
-                "key_insights": company.key_insights,
-                "market_position": company.market_position
-            },
-            "template": {
-                "subject": template.subject,
-                "body": template.body
-            }
-        }
+DEFAULT_MODEL = "gpt-4o-mini"
 
-        if additional_context:
-            context.update(additional_context)
+SYSTEM_PROMPT = (
+    "You are an expert B2B sales email writer. Write short, specific, "
+    "personalized outreach emails with one clear call to action."
+)
 
-        # Create the prompt for OpenAI
-        prompt = f"""
-        Generate a personalized email based on the following context:
-        
-        Prospect Information:
-        - Name: {context['prospect']['name']}
-        - Position: {context['prospect']['position']}
-        - Company: {context['prospect']['company']}
-        - Industry: {context['prospect']['industry']}
-        
-        Company Information:
-        - Name: {context['company']['name']}
-        - Industry: {context['company']['industry']}
-        - Description: {context['company']['description']}
-        - Key Insights: {context['company']['key_insights']}
-        - Market Position: {context['company']['market_position']}
-        
-        Base Template:
-        Subject: {context['template']['subject']}
-        Body: {context['template']['body']}
-        
-        Please generate a personalized version of this email that:
-        1. References specific details about the prospect's company and role
-        2. Includes relevant industry insights
-        3. Maintains a professional yet conversational tone
-        4. Focuses on value proposition relevant to their position
-        5. Includes a clear call to action
-        
-        Format the response as:
-        SUBJECT: [personalized subject]
-        BODY: [personalized body]
-        """
 
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are an expert sales email writer who creates highly personalized and effective outreach emails."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
+class ConfigError(RuntimeError):
+    """Raised when a required env var (OpenAI key, SMTP settings) is missing."""
 
-            # Parse the response
-            email_content = response.choices[0].message.content
-            subject, body = self._parse_email_content(email_content)
 
-            return {
-                "subject": subject,
-                "body": body,
-                "generated_at": datetime.utcnow()
-            }
+def get_model() -> str:
+    return os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
 
-        except Exception as e:
-            raise Exception(f"Failed to generate personalized email: {str(e)}")
 
-    def _parse_email_content(self, content: str) -> tuple[str, str]:
-        """
-        Parse the AI-generated email content into subject and body
-        """
-        lines = content.split('\n')
-        subject = ""
-        body = []
-        body_started = False
+def get_openai_client() -> OpenAI:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ConfigError("OPENAI_API_KEY is not set")
+    return OpenAI(api_key=api_key)
 
-        for line in lines:
-            if line.startswith("SUBJECT:"):
-                subject = line.replace("SUBJECT:", "").strip()
-            elif line.startswith("BODY:"):
-                body_started = True
-            elif body_started and line.strip():
-                body.append(line)
 
-        return subject, '\n'.join(body)
+def build_prompt(
+    prospect: Prospect,
+    company: Optional[Company],
+    template: Optional[EmailTemplate] = None,
+    additional_context: Optional[Dict] = None,
+) -> str:
+    c = company
+    lines = [
+        "Write a personalized cold email for this prospect.",
+        "",
+        "Prospect:",
+        f"- Name: {prospect.name}",
+        f"- Title: {prospect.position or 'unknown'}",
+        f"- Notes: {prospect.notes or 'none'}",
+        "",
+        "Prospect's company:",
+        f"- Name: {c.name if c else 'unknown'}",
+        f"- Industry: {(c.industry if c else None) or 'unknown'}",
+        f"- Description: {(c.description if c else None) or 'none'}",
+        f"- Key insights: {(c.key_insights if c else None) or 'none'}",
+        f"- Product info: {(c.product_info if c else None) or 'none'}",
+        f"- Market position: {(c.market_position if c else None) or 'none'}",
+    ]
+    if template:
+        lines += ["", "Base template to personalize:", f"Subject: {template.subject}", f"Body: {template.body}"]
+    if additional_context:
+        lines += ["", "Additional context (e.g. product usage):"]
+        lines += [f"- {k}: {v}" for k, v in additional_context.items()]
+    lines += [
+        "",
+        "Reply in exactly this format:",
+        "SUBJECT: <subject line>",
+        "BODY:",
+        "<email body>",
+    ]
+    return "\n".join(lines)
 
-    def create_template_variants(
-        self,
-        base_template: EmailTemplate,
-        num_variants: int = 2
-    ) -> list[EmailTemplateCreate]:
-        """
-        Create A/B testing variants of an email template
-        """
-        variants = []
-        for i in range(num_variants):
-            prompt = f"""
-            Create a variant of this email template for A/B testing:
-            
-            Original Subject: {base_template.subject}
-            Original Body: {base_template.body}
-            
-            Create a variant that:
-            1. Maintains the same core message
-            2. Uses different wording and structure
-            3. Tests different value propositions
-            4. Has a different call to action
-            
-            Format the response as:
-            SUBJECT: [variant subject]
-            BODY: [variant body]
-            """
 
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": "You are an expert in email marketing and A/B testing."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.8,
-                    max_tokens=1000
-                )
+def parse_email(content: str) -> Tuple[str, str]:
+    subject, body_lines, in_body = "", [], False
+    for line in content.strip().splitlines():
+        if not in_body and line.upper().startswith("SUBJECT:"):
+            subject = line.split(":", 1)[1].strip()
+        elif not in_body and line.upper().startswith("BODY:"):
+            in_body = True
+            rest = line.split(":", 1)[1].strip()
+            if rest:
+                body_lines.append(rest)
+        elif in_body:
+            body_lines.append(line)
+    if not in_body:  # model ignored the format; use everything as body
+        body_lines = [l for l in content.strip().splitlines() if not l.upper().startswith("SUBJECT:")]
+    return subject, "\n".join(body_lines).strip()
 
-                email_content = response.choices[0].message.content
-                subject, body = self._parse_email_content(email_content)
 
-                variants.append(EmailTemplateCreate(
-                    name=f"{base_template.name} - Variant {i+1}",
-                    subject=subject,
-                    body=body,
-                    company_id=base_template.company_id,
-                    variant=f"variant_{i+1}"
-                ))
+def generate_personalized_email(
+    prospect: Prospect,
+    company: Optional[Company],
+    template: Optional[EmailTemplate] = None,
+    additional_context: Optional[Dict] = None,
+    client: Optional[OpenAI] = None,
+) -> Dict:
+    client = client or get_openai_client()
+    model = get_model()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_prompt(prospect, company, template, additional_context)},
+        ],
+        temperature=0.7,
+        max_tokens=800,
+    )
+    subject, body = parse_email(response.choices[0].message.content or "")
+    return {
+        "subject": subject,
+        "body": body,
+        "model": model,
+        "generated_at": datetime.now(timezone.utc),
+    }
 
-            except Exception as e:
-                raise Exception(f"Failed to create template variant: {str(e)}")
 
-        return variants 
+def smtp_configured() -> bool:
+    return all(os.getenv(k) for k in ("SMTP_SERVER", "SMTP_USERNAME", "SMTP_PASSWORD"))
+
+
+def send_email(to: str, subject: str, body: str) -> None:
+    if not smtp_configured():
+        raise ConfigError("SMTP_SERVER, SMTP_USERNAME and SMTP_PASSWORD must be set to send email")
+    msg = EmailMessage()
+    msg["From"] = os.getenv("SMTP_FROM", os.environ["SMTP_USERNAME"])
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+    port = int(os.getenv("SMTP_PORT", "587"))
+    with smtplib.SMTP(os.environ["SMTP_SERVER"], port, timeout=30) as smtp:
+        smtp.starttls()
+        smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+        smtp.send_message(msg)
