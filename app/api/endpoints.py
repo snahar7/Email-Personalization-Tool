@@ -1,50 +1,45 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from sqlalchemy.orm import Session
-from typing import List, Optional
-import pandas as pd
+import csv
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy.orm import Session
 
 from app.database.database import get_db
-from app.models.models import Company, Prospect, EmailTemplate, EmailEngagement
-from app.schemas.schemas import (
-    Company, CompanyCreate,
-    Prospect, ProspectCreate,
-    EmailTemplate, EmailTemplateCreate,
-    EmailEngagement, EmailEngagementCreate,
-    EngagementMetrics, ProspectEngagement
-)
+from app.models import models
+from app.schemas import schemas
 
 router = APIRouter()
 
 # Company endpoints
-@router.post("/companies/", response_model=Company)
-def create_company(company: CompanyCreate, db: Session = Depends(get_db)):
-    db_company = Company(**company.dict())
+@router.post("/companies/", response_model=schemas.Company)
+def create_company(company: schemas.CompanyCreate, db: Session = Depends(get_db)):
+    db_company = models.Company(**company.model_dump())
     db.add(db_company)
     db.commit()
     db.refresh(db_company)
     return db_company
 
-@router.get("/companies/", response_model=List[Company])
+@router.get("/companies/", response_model=List[schemas.Company])
 def get_companies(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    companies = db.query(Company).offset(skip).limit(limit).all()
+    companies = db.query(models.Company).offset(skip).limit(limit).all()
     return companies
 
-@router.get("/companies/{company_id}", response_model=Company)
+@router.get("/companies/{company_id}", response_model=schemas.Company)
 def get_company(company_id: int, db: Session = Depends(get_db)):
-    company = db.query(Company).filter(Company.id == company_id).first()
+    company = db.query(models.Company).filter(models.Company.id == company_id).first()
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     return company
 
-@router.put("/companies/{company_id}", response_model=Company)
-def update_company(company_id: int, company_update: CompanyCreate, db: Session = Depends(get_db)):
-    company = db.query(Company).filter(Company.id == company_id).first()
+@router.put("/companies/{company_id}", response_model=schemas.Company)
+def update_company(company_id: int, company_update: schemas.CompanyCreate, db: Session = Depends(get_db)):
+    company = db.query(models.Company).filter(models.Company.id == company_id).first()
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     
-    for key, value in company_update.dict(exclude_unset=True).items():
+    for key, value in company_update.model_dump(exclude_unset=True).items():
         setattr(company, key, value)
     
     db.commit()
@@ -60,119 +55,126 @@ async def upload_companies_csv(
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
     
+    contents = await file.read()
     try:
-        contents = await file.read()
-        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
-        
-        # Process each row
-        for _, row in df.iterrows():
-            # Create or get company
-            company = db.query(Company).filter(Company.name == row['company']).first()
-            if not company:
-                company = Company(
-                    name=row['company'],
-                    industry=row.get('industry'),
-                    website=row.get('website'),
-                    description=row.get('company_description')
-                )
-                db.add(company)
-                db.commit()
-                db.refresh(company)
-            
-            # Create prospect
-            prospect = Prospect(
-                name=row['name'],
-                email=row['email'],
-                position=row['title'],
-                company_id=company.id,
-                linkedin_url=row.get('linkedin')
+        reader = csv.DictReader(io.StringIO(contents.decode("utf-8-sig")))
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8")
+    required = {"name", "email", "title", "company"}
+    missing = required - set(reader.fieldnames or [])
+    if missing:
+        raise HTTPException(status_code=400, detail=f"CSV missing columns: {sorted(missing)}")
+
+    companies_created = prospects_created = prospects_skipped = 0
+    for row in reader:
+        company = db.query(models.Company).filter(models.Company.name == row["company"]).first()
+        if not company:
+            company = models.Company(
+                name=row["company"],
+                industry=row.get("industry") or None,
+                website=row.get("website") or None,
+                description=row.get("company_description") or None,
             )
-            db.add(prospect)
-        
-        db.commit()
-        return {"message": "CSV processed successfully"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            db.add(company)
+            db.flush()
+            companies_created += 1
+        if db.query(models.Prospect).filter(models.Prospect.email == row["email"]).first():
+            prospects_skipped += 1
+            continue
+        db.add(models.Prospect(
+            name=row["name"],
+            email=row["email"],
+            position=row.get("title") or None,
+            company_id=company.id,
+            linkedin_url=row.get("linkedin") or None,
+        ))
+        prospects_created += 1
+    db.commit()
+    return {
+        "message": "CSV processed successfully",
+        "companies_created": companies_created,
+        "prospects_created": prospects_created,
+        "prospects_skipped": prospects_skipped,
+    }
 
 # Prospect endpoints
-@router.post("/prospects/", response_model=Prospect)
-def create_prospect(prospect: ProspectCreate, db: Session = Depends(get_db)):
-    db_prospect = Prospect(**prospect.dict())
+@router.post("/prospects/", response_model=schemas.Prospect)
+def create_prospect(prospect: schemas.ProspectCreate, db: Session = Depends(get_db)):
+    db_prospect = models.Prospect(**prospect.model_dump())
     db.add(db_prospect)
     db.commit()
     db.refresh(db_prospect)
     return db_prospect
 
-@router.get("/prospects/", response_model=List[Prospect])
+@router.get("/prospects/", response_model=List[schemas.Prospect])
 def get_prospects(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    query = db.query(Prospect)
+    query = db.query(models.Prospect)
     if status:
-        query = query.filter(Prospect.status == status)
+        query = query.filter(models.Prospect.status == status)
     prospects = query.offset(skip).limit(limit).all()
     return prospects
 
-@router.get("/prospects/{prospect_id}", response_model=Prospect)
+@router.get("/prospects/{prospect_id}", response_model=schemas.Prospect)
 def get_prospect(prospect_id: int, db: Session = Depends(get_db)):
-    prospect = db.query(Prospect).filter(Prospect.id == prospect_id).first()
+    prospect = db.query(models.Prospect).filter(models.Prospect.id == prospect_id).first()
     if prospect is None:
         raise HTTPException(status_code=404, detail="Prospect not found")
     return prospect
 
 # Email Template endpoints
-@router.post("/templates/", response_model=EmailTemplate)
-def create_template(template: EmailTemplateCreate, db: Session = Depends(get_db)):
-    db_template = EmailTemplate(**template.dict())
+@router.post("/templates/", response_model=schemas.EmailTemplate)
+def create_template(template: schemas.EmailTemplateCreate, db: Session = Depends(get_db)):
+    db_template = models.EmailTemplate(**template.model_dump())
     db.add(db_template)
     db.commit()
     db.refresh(db_template)
     return db_template
 
-@router.get("/templates/", response_model=List[EmailTemplate])
+@router.get("/templates/", response_model=List[schemas.EmailTemplate])
 def get_templates(
     company_id: Optional[int] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db)
 ):
-    query = db.query(EmailTemplate)
+    query = db.query(models.EmailTemplate)
     if company_id:
-        query = query.filter(EmailTemplate.company_id == company_id)
+        query = query.filter(models.EmailTemplate.company_id == company_id)
     if is_active is not None:
-        query = query.filter(EmailTemplate.is_active == is_active)
+        query = query.filter(models.EmailTemplate.is_active == is_active)
     return query.all()
 
 # Email Engagement endpoints
-@router.post("/engagements/", response_model=EmailEngagement)
-def create_engagement(engagement: EmailEngagementCreate, db: Session = Depends(get_db)):
-    db_engagement = EmailEngagement(**engagement.dict())
+@router.post("/engagements/", response_model=schemas.EmailEngagement)
+def create_engagement(engagement: schemas.EmailEngagementCreate, db: Session = Depends(get_db)):
+    db_engagement = models.EmailEngagement(**engagement.model_dump())
     db.add(db_engagement)
     
     # Update prospect's last_contacted and engagement_score
-    prospect = db.query(Prospect).filter(Prospect.id == engagement.prospect_id).first()
+    prospect = db.query(models.Prospect).filter(models.Prospect.id == engagement.prospect_id).first()
     if prospect:
-        prospect.last_contacted = datetime.utcnow()
-        prospect.engagement_score += engagement.engagement_score
+        prospect.last_contacted = datetime.now(timezone.utc)
+        prospect.engagement_score = (prospect.engagement_score or 0) + engagement.engagement_score
     
     db.commit()
     db.refresh(db_engagement)
     return db_engagement
 
-@router.get("/engagements/metrics/", response_model=EngagementMetrics)
+@router.get("/engagements/metrics/", response_model=schemas.EngagementMetrics)
 def get_engagement_metrics(
     company_id: Optional[int] = None,
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db)
 ):
-    start_date = datetime.utcnow() - timedelta(days=days)
-    query = db.query(EmailEngagement).filter(EmailEngagement.sent_at >= start_date)
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    query = db.query(models.EmailEngagement).filter(models.EmailEngagement.sent_at >= start_date)
     
     if company_id:
-        query = query.join(Prospect).filter(Prospect.company_id == company_id)
+        query = query.join(models.Prospect).filter(models.Prospect.company_id == company_id)
     
     engagements = query.all()
     
@@ -202,20 +204,20 @@ def get_engagement_metrics(
     )[0] if template_performance else None
     
     if best_template_id:
-        best_template = db.query(EmailTemplate).filter(EmailTemplate.id == best_template_id).first()
+        best_template = db.query(models.EmailTemplate).filter(models.EmailTemplate.id == best_template_id).first()
         metrics["best_performing_template"] = best_template.name if best_template else None
     
     return metrics
 
-@router.get("/prospects/{prospect_id}/engagement/", response_model=ProspectEngagement)
+@router.get("/prospects/{prospect_id}/engagement/", response_model=schemas.ProspectEngagement)
 def get_prospect_engagement(prospect_id: int, db: Session = Depends(get_db)):
-    prospect = db.query(Prospect).filter(Prospect.id == prospect_id).first()
+    prospect = db.query(models.Prospect).filter(models.Prospect.id == prospect_id).first()
     if not prospect:
         raise HTTPException(status_code=404, detail="Prospect not found")
     
-    engagements = db.query(EmailEngagement).filter(
-        EmailEngagement.prospect_id == prospect_id
-    ).order_by(EmailEngagement.sent_at.desc()).all()
+    engagements = db.query(models.EmailEngagement).filter(
+        models.EmailEngagement.prospect_id == prospect_id
+    ).order_by(models.EmailEngagement.sent_at.desc()).all()
     
     engagement_trend = [
         {

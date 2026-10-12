@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -19,11 +19,10 @@ class CompanyCreate(CompanyBase):
 
 class Company(CompanyBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Prospect Schemas
 class ProspectBase(BaseModel):
@@ -40,13 +39,12 @@ class ProspectCreate(ProspectBase):
 
 class Prospect(ProspectBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     last_contacted: Optional[datetime] = None
     engagement_score: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class EmailTemplateBase(BaseModel):
     name: str
@@ -62,11 +60,10 @@ class EmailTemplateCreate(EmailTemplateBase):
 
 class EmailTemplate(EmailTemplateBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class EmailEngagementBase(BaseModel):
     prospect_id: int
@@ -79,13 +76,12 @@ class EmailEngagementCreate(EmailEngagementBase):
 
 class EmailEngagement(EmailEngagementBase):
     id: int
-    sent_at: datetime
+    sent_at: Optional[datetime] = None
     opened_at: Optional[datetime] = None
     clicked_at: Optional[datetime] = None
     replied_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Response models for analytics
 class EngagementMetrics(BaseModel):
@@ -101,4 +97,30 @@ class ProspectEngagement(BaseModel):
     prospect: Prospect
     total_emails: int
     last_engagement: Optional[datetime] = None
-    engagement_trend: List[Dict[str, datetime]] 
+    engagement_trend: List[Dict[str, Optional[datetime]]] 
+
+# AI email generation / sending
+class GenerateEmailRequest(BaseModel):
+    template_id: Optional[int] = None
+    additional_context: Optional[Dict] = None
+
+
+class GeneratedEmail(BaseModel):
+    prospect_id: int
+    subject: str
+    body: str
+    model: str
+    generated_at: datetime
+
+
+class SendEmailRequest(BaseModel):
+    subject: str
+    body: str
+    template_id: Optional[int] = None
+
+
+class SendEmailResult(BaseModel):
+    prospect_id: int
+    to: str
+    sent: bool
+    engagement_id: Optional[int] = None
